@@ -4,7 +4,7 @@ import { SessionSummary, TurnRow } from './types';
 
 export type ViewMode = 'sessions' | 'recent';
 export type SortBy = 'date' | 'turns' | 'name';
-export type FilterType = 'all' | 'workspace' | 'global' | 'transferred';
+export type FilterType = 'all' | 'current' | 'workspace' | 'global' | 'transferred';
 
 type TreeItem = CategoryItem | SessionItem | DetailItem | SessionHeaderItem | MessageItem | MessageDetailItem;
 
@@ -26,12 +26,18 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   private _sortBy: SortBy = 'date';
   private _filterType: FilterType = 'all';
   private _filterDays = 0;
+  private _currentWorkspaceName: string | undefined;
 
   constructor(private readonly db: ChatDatabase) {}
 
   get viewMode(): ViewMode { return this._viewMode; }
+  get sortBy(): SortBy { return this._sortBy; }
   get filterType(): FilterType { return this._filterType; }
   get filterDays(): number { return this._filterDays; }
+
+  setCurrentWorkspace(name: string | undefined): void {
+    this._currentWorkspaceName = name;
+  }
 
   setViewMode(mode: ViewMode): void {
     this._viewMode = mode;
@@ -97,9 +103,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
 
   private async _getSessionsRoot(): Promise<TreeItem[]> {
     if (this._sessions.length === 0) {
-      const opts: { maxAgeDays?: number; storageType?: string } = {};
-      if (this._filterType !== 'all') { opts.storageType = this._filterType; }
-      if (this._filterDays > 0) { opts.maxAgeDays = this._filterDays; }
+      const opts = this._buildListOpts();
       this._sessions = await this.db.listSessions(opts);
       this._applySortSessions(this._sessions);
     }
@@ -129,6 +133,17 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
       categories.push(new CategoryItem(`${name} (${sessions.length})`, sessions, icon));
     }
     return categories;
+  }
+
+  private _buildListOpts(): { maxAgeDays?: number; storageType?: string; workspacePath?: string } {
+    const opts: { maxAgeDays?: number; storageType?: string; workspacePath?: string } = {};
+    if (this._filterType === 'current') {
+      opts.workspacePath = this._currentWorkspaceName;
+    } else if (this._filterType !== 'all') {
+      opts.storageType = this._filterType;
+    }
+    if (this._filterDays > 0) { opts.maxAgeDays = this._filterDays; }
+    return opts;
   }
 
   private _applySortSessions(sessions: SessionSummary[]): void {
@@ -179,9 +194,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   }
 
   private async _loadRecentSessions(generation: number): Promise<void> {
-    const opts: { limit: number; maxAgeDays?: number; storageType?: string } = { limit: 10 };
-    if (this._filterType !== 'all') { opts.storageType = this._filterType; }
-    if (this._filterDays > 0) { opts.maxAgeDays = this._filterDays; }
+    const opts = { ...this._buildListOpts(), limit: 10 };
     const summaries = await this.db.listSessions(opts);
     if (this._recentGeneration !== generation) { return; }
 

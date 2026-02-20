@@ -204,6 +204,7 @@ export class ChatDatabase {
   async listSessions(opts: {
     maxAgeDays?: number;
     storageType?: string;
+    workspacePath?: string;
     limit?: number;
     offset?: number;
   } = {}): Promise<SessionSummary[]> {
@@ -218,6 +219,10 @@ export class ChatDatabase {
     if (opts.storageType) {
       conditions.push('storage_type = ?');
       params.push(opts.storageType);
+    }
+    if (opts.workspacePath) {
+      conditions.push('workspace_path = ?');
+      params.push(opts.workspacePath);
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

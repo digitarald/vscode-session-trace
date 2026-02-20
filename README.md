@@ -11,9 +11,8 @@ Browse all Copilot Chat sessions stored on disk — workspace sessions, global (
 
 The view toolbar provides:
 
-- **Sort** (`$(arrow-up)`) — order sessions by date (newest first), number of turns, or name.
-- **Filter** (`$(filter)`) — narrow sessions by storage type (workspace / global / transferred) and time range (last 7, 30, or 90 days). The active filter is shown in the view's subtitle.
-- **Switch to Recent View** (`$(history)`) / **Switch to Sessions View** (`$(list-tree)`) — toggle between the grouped sessions tree and a flat recent-messages view that streams in the latest turns with their full prompt and response content.
+- **Sort & Filter** — one button opens a picker with three sections: *Sort* (date / turns / name), *Workspace* (all · this workspace · workspace / global / transferred), and *Time range* (all time · last 7d / 30d / 90d). The current selection in each section is marked with a checkmark. The active filter is shown in the view's subtitle.
+- **Switch to Recent View** / **Switch to Sessions View** — toggle between the grouped sessions tree and a flat recent-messages view that streams in the latest turns with their full prompt and response content.
 
 ### Search Conversations
 Use the **Session Trace: Search Conversations** command (`Ctrl+Shift+P`) to fuzzy-search across all indexed prompts, responses, and session titles using full-text search backed by SQLite FTS5.
@@ -36,7 +35,7 @@ The tool supports three modes:
 2. Open the **Session Trace** activity bar panel (speech-bubble icon).
 3. Sessions are discovered and indexed automatically on activation.
 4. Use the **Refresh** button to re-index after new sessions are created.
-5. Use the **Sort** or **Filter** toolbar buttons to narrow or reorder the session list.
+5. Click **Sort & Filter** to narrow or reorder the session list, including filtering to the current workspace only.
 6. Click the **Switch to Recent View** button to browse the latest conversation turns inline.
 7. Click the **Search** icon or run `Session Trace: Search Conversations` to search.
 

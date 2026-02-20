@@ -42,6 +42,12 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(treeView);
   await vscode.commands.executeCommand('setContext', 'sessionTraceViewMode', 'sessions');
 
+  // Seed and track current workspace name for filtering
+  const updateWorkspace = () =>
+    sessionTree.setCurrentWorkspace(vscode.workspace.workspaceFolders?.[0]?.name);
+  updateWorkspace();
+  context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(updateWorkspace));
+
   // Background reindex on activation
   const indexDone = vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Session Trace', cancellable: false },
@@ -200,13 +206,21 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // --- Sort / Filter / View-mode commands ---
-  const updateFilterDescription = () => {
-    const typePart = sessionTree.filterType !== 'all' ? sessionTree.filterType : '';
+  // --- View-mode / sort / filter commands ---
+  const updateViewDescription = () => {
+    const typePart = sessionTree.filterType !== 'all'
+      ? (sessionTree.filterType === 'current' ? 'this workspace' : sessionTree.filterType)
+      : '';
     const daysPart = sessionTree.filterDays > 0 ? `last ${sessionTree.filterDays}d` : '';
     const desc = [typePart, daysPart].filter(Boolean).join(' · ');
-    treeView.description = desc.length > 0 ? desc : undefined;
+    treeView.description = desc || undefined;
   };
+
+  type OptionItem = vscode.QuickPickItem & (
+    | { action: 'sort'; sort: SortBy }
+    | { action: 'filter-type'; type: FilterType }
+    | { action: 'filter-days'; days: number }
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('sessionTrace.viewAsRecent', () => {
@@ -219,37 +233,47 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('setContext', 'sessionTraceViewMode', 'sessions');
     }),
 
-    vscode.commands.registerCommand('sessionTrace.sortSessions', async () => {
-      const options: Array<{ label: string; value: SortBy }> = [
-        { label: '$(calendar) Date (newest first)', value: 'date' },
-        { label: '$(comment-discussion) Turns (most first)', value: 'turns' },
-        { label: '$(sort-precedence) Name (A–Z)', value: 'name' },
-      ];
-      const pick = await vscode.window.showQuickPick(options, { placeHolder: 'Sort sessions by…' });
-      if (pick) { sessionTree.setSortBy(pick.value); }
-    }),
+    vscode.commands.registerCommand('sessionTrace.viewOptions', async () => {
+      const check = (active: boolean) => active ? '$(check)' : '';
+      const s = sessionTree.sortBy;
+      const f = sessionTree.filterType;
+      const d = sessionTree.filterDays;
+      const hasWorkspace = !!vscode.workspace.workspaceFolders?.length;
 
-    vscode.commands.registerCommand('sessionTrace.filterSessions', async () => {
-      const typeOptions: Array<{ label: string; value: FilterType }> = [
-        { label: '$(list-flat) All types', value: 'all' },
-        { label: '$(folder) Workspace only', value: 'workspace' },
-        { label: '$(globe) Global / empty window', value: 'global' },
-        { label: '$(arrow-swap) Transferred', value: 'transferred' },
+      const items: OptionItem[] = [
+        { kind: vscode.QuickPickItemKind.Separator, label: 'Sort', action: 'sort', sort: 'date' },
+        { label: '$(calendar) Date (newest first)',         description: check(s === 'date'),  action: 'sort', sort: 'date' },
+        { label: '$(comment-discussion) Turns (most first)', description: check(s === 'turns'), action: 'sort', sort: 'turns' },
+        { label: '$(sort-precedence) Name (A–Z)',            description: check(s === 'name'),  action: 'sort', sort: 'name' },
+        { kind: vscode.QuickPickItemKind.Separator, label: 'Workspace', action: 'filter-type', type: 'all' },
+        { label: '$(list-flat) All sessions',               description: check(f === 'all'),       action: 'filter-type', type: 'all' },
+        ...(hasWorkspace ? [{ label: `$(folder-active) This workspace (${vscode.workspace.workspaceFolders![0].name})`, description: check(f === 'current'), action: 'filter-type' as const, type: 'current' as FilterType }] : []),
+        { label: '$(folder) Workspace sessions',            description: check(f === 'workspace'),   action: 'filter-type', type: 'workspace' },
+        { label: '$(globe) Global / empty window',          description: check(f === 'global'),      action: 'filter-type', type: 'global' },
+        { label: '$(arrow-swap) Transferred',               description: check(f === 'transferred'), action: 'filter-type', type: 'transferred' },
+        { kind: vscode.QuickPickItemKind.Separator, label: 'Time range', action: 'filter-days', days: 0 },
+        { label: '$(history) All time',     description: check(d === 0),  action: 'filter-days', days: 0 },
+        { label: '$(calendar) Last 7 days', description: check(d === 7),  action: 'filter-days', days: 7 },
+        { label: '$(calendar) Last 30 days',description: check(d === 30), action: 'filter-days', days: 30 },
+        { label: '$(calendar) Last 90 days',description: check(d === 90), action: 'filter-days', days: 90 },
       ];
-      const typePick = await vscode.window.showQuickPick(typeOptions, { placeHolder: 'Filter by storage type…' });
-      if (!typePick) { return; }
 
-      const daysOptions = [
-        { label: '$(history) All time', value: 0 },
-        { label: '$(calendar) Last 7 days', value: 7 },
-        { label: '$(calendar) Last 30 days', value: 30 },
-        { label: '$(calendar) Last 90 days', value: 90 },
-      ];
-      const daysPick = await vscode.window.showQuickPick(daysOptions, { placeHolder: 'Filter by time range…' });
-      if (!daysPick) { return; }
+      const pick = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Sort or filter sessions…',
+        matchOnDescription: false,
+      }) as OptionItem | undefined;
 
-      sessionTree.setFilter(typePick.value, daysPick.value);
-      updateFilterDescription();
+      if (!pick || pick.kind === vscode.QuickPickItemKind.Separator) { return; }
+
+      if (pick.action === 'sort') {
+        sessionTree.setSortBy(pick.sort);
+      } else if (pick.action === 'filter-type') {
+        sessionTree.setFilter(pick.type, sessionTree.filterDays);
+        updateViewDescription();
+      } else {
+        sessionTree.setFilter(sessionTree.filterType, pick.days);
+        updateViewDescription();
+      }
     }),
   );
 

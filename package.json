@@ -37,7 +37,7 @@
         "displayName": "Search Session Trace",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "sessionTraceSearch",
-        "icon": "$(search)",
+        "icon": "$(history)",
         "userDescription": "Query your VS Code Copilot chat conversation history with full-text search or SQL",
         "modelDescription": "Query a SQLite database of indexed VS Code Copilot chat history.\n\nModes (mutually exclusive):\n1. `describe` — Returns schema overview: table row counts, annotation kind distribution, top tools, top models/agents, date range, and actionable hints. **Always start here.**\n2. `query` — Full-text search via FTS5 (BM25 ranking, prefix matching). Supports OR/NOT operators.\n3. `sql` — Read-only SQL SELECT for aggregations, filters, JOINs. `scope`/`daysBack` are ignored — embed in WHERE.\n\nQuery strategy:\n- **Always call `describe: true` first** — it shows available annotation kinds, top tools, and hints. Follow the hints.\n- For \"what did I discuss about X\" → `query` mode\n- For \"how many/which/list all\" → `sql` mode with GROUP BY\n- If 0 rows returned, **switch approach** (FTS ↔ SQL, different table) — do NOT retry similar queries\n- Fan out independent queries in parallel — avoid serial single-tool COUNT queries\n\nFTS5 syntax (for `query` param and `MATCH` in SQL):\n- Implicit AND: `react hooks` (both required)\n- OR: `react OR vue OR angular` (any match)\n- NOT: `react NOT angular`\n- Prefix: automatic (`reac` → `react`, `reactive`)\n\nSchema:\n```\nsessions(session_id TEXT PK, file_path TEXT, title TEXT, creation_date INTEGER /*Unix ms*/, request_count INTEGER, last_message TEXT, model_ids TEXT /*comma-sep*/, agents TEXT /*comma-sep*/, total_tokens INTEGER, has_votes INTEGER /*0|1*/, storage_type TEXT, workspace_path TEXT, file_mtime INTEGER)\n\nturns(id INTEGER PK, session_id TEXT FK→sessions, turn_index INTEGER, prompt_text TEXT, response_text TEXT, agent TEXT, model TEXT, timestamp INTEGER /*Unix ms*/, duration_ms INTEGER, token_total INTEGER, token_prompt INTEGER, token_completion INTEGER, vote INTEGER /*NULL|1=up|2=down*/)\n\nannotations(id INTEGER PK, turn_id INTEGER FK→turns, kind TEXT, name TEXT, uri TEXT, detail TEXT)\n-- Indexed on (kind, name)\n\nturns_fts -- FTS5 over turns(prompt_text, response_text, agent, model)\n```\n\nAnnotation kinds — **check `describe` output for which exist**:\n- kind='tool' → name = tool function name (e.g. 'copilot_readFile', 'mcp_github_create_branch'). MCP tools have 'mcp_' prefix.\n- kind='file_edit' → name = filename, uri = full path\n- kind='file_ref' → name = reference name, uri = full path\n- kind='codeblock' → name = filename, uri = full path\n- kind='attachment' → name = variable name or id\n- kind='thinking' → detail = thought text (truncated)\n\nSQL examples:\n- Tool usage ranking: `SELECT name, COUNT(*) c FROM annotations WHERE kind='tool' GROUP BY name ORDER BY c DESC LIMIT 20`\n- MCP tools only: `SELECT name, COUNT(*) c FROM annotations WHERE kind='tool' AND name LIKE 'mcp_%' GROUP BY name ORDER BY c DESC LIMIT 20`\n- Tool usage by session: `SELECT a.name, COUNT(DISTINCT t.session_id) c FROM annotations a JOIN turns t ON a.turn_id=t.id WHERE a.kind='tool' AND a.name LIKE 'mcp_%' GROUP BY a.name ORDER BY c DESC LIMIT 20`\n- Models this week: `SELECT model, COUNT(*) c FROM turns WHERE timestamp > (strftime('%s','now')-604800)*1000 GROUP BY model ORDER BY c DESC LIMIT 20`\n- Files edited: `SELECT a.name, a.uri, COUNT(*) c FROM annotations a JOIN turns t ON a.turn_id=t.id WHERE a.kind='file_edit' GROUP BY a.name, a.uri ORDER BY c DESC LIMIT 20`\n- FTS OR search: `SELECT t.prompt_text, s.title FROM turns_fts JOIN turns t ON t.id=turns_fts.rowid JOIN sessions s ON s.session_id=t.session_id WHERE turns_fts MATCH 'react OR vue' ORDER BY turns_fts.rank LIMIT 10`\n\nRules: Always LIMIT (max 500). No placeholders (?). SELECT only.\nParallelize independent queries. Provide a `label` for each call.",
         "inputSchema": {
@@ -142,14 +142,8 @@
         "category": "Session Trace"
       },
       {
-        "command": "sessionTrace.sortSessions",
-        "title": "Sort Sessions",
-        "icon": "$(arrow-up)",
-        "category": "Session Trace"
-      },
-      {
-        "command": "sessionTrace.filterSessions",
-        "title": "Filter Sessions",
+        "command": "sessionTrace.viewOptions",
+        "title": "Sort & Filter",
         "icon": "$(filter)",
         "category": "Session Trace"
       }
@@ -167,12 +161,7 @@
           "group": "navigation"
         },
         {
-          "command": "sessionTrace.sortSessions",
-          "when": "view == sessionTrace.jsonlSessions",
-          "group": "navigation"
-        },
-        {
-          "command": "sessionTrace.filterSessions",
+          "command": "sessionTrace.viewOptions",
           "when": "view == sessionTrace.jsonlSessions",
           "group": "navigation"
         },
