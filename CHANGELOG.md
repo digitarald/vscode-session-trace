@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.0.3] - 2026-02-20
+
+### Changed
+- Workspace filtering now uses normalized filesystem paths instead of folder names, fixing matching across URI formats (`file://`, Windows drive paths, `.code-workspace` files)
+- Multi-root and `.code-workspace` file support for workspace identity detection
+- Turn timestamps use a robust fallback chain (`request.timestamp` → `data.creationDate` → `summary.creationDate` → file mtime)
+- Schema version bumped to 3 to trigger re-indexing with improved workspace IDs
+- Path scrubbing for error messages refactored into a shared helper
+- Tool icon switched to `$(watch)`
+
+### Fixed
+- File-edit annotation parsing no longer misidentifies Windows drive paths (e.g. `C:\...`) as URIs
+- Mtime comparison uses strict inequality (`!==`) instead of less-than, ensuring edits that revert mtime trigger re-indexing
+- `data.requests` validated with `Array.isArray()` instead of a truthy check, preventing crashes on malformed session data
+- `workspace.json` reader now handles `workspace.configPath`, `workspace.folders`, and nested folder objects
+
 ## [0.0.2] - 2026-02-19
 
 ### Added

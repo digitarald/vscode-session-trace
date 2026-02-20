@@ -2,7 +2,7 @@
   "name": "vscode-session-trace",
   "displayName": "Session Trace",
   "description": "Explore VS Code Copilot Chat session files (.jsonl) and compare with sessionTrace API",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "digitarald",
   "icon": "icon.png",
   "license": "MIT",
