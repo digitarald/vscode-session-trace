@@ -1,10 +1,15 @@
-# Session Trace
+<p align="center">
+  <img src="docs/logo.png" alt="Session Trace" width="128" />
+</p>
 
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=digitarald.vscode-session-trace)
-[![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=flat-square&logo=visualstudiocode)](https://insiders.vscode.dev/editor/open/extension/digitarald.vscode-session-trace)
-[![Build](https://github.com/digitarald/vscode-session-trace/actions/workflows/build.yml/badge.svg)](https://github.com/digitarald/vscode-session-trace/actions/workflows/build.yml)
+<h1 align="center">Session Trace</h1>
 
-> **Your Copilot Chat history, made searchable and queryable.**
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=digitarald.vscode-session-trace"><img src="https://img.shields.io/visual-studio-marketplace/v/digitarald.vscode-session-trace?label=Marketplace&logo=visualstudiocode" alt="Visual Studio Marketplace" /></a>
+  <a href="https://github.com/digitarald/vscode-session-trace/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/digitarald/vscode-session-trace/build.yml?label=Build" alt="Build" /></a>
+</p>
+
+<p align="center"><strong>Your Copilot Chat history, made searchable and queryable.</strong></p>
 
 A VS Code extension that indexes your Copilot Chat session files (`.jsonl`) into a local SQLite database and exposes them through a tree view, a quick-pick search, and a language model tool for conversational queries.
 
