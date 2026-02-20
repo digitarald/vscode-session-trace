@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.0.2] - 2026-02-19
+
+### Added
+- Extension icon and logo in README header
+
 ## [0.0.1] - 2026-02-19
 
 ### Added
