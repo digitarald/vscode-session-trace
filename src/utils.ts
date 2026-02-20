@@ -115,6 +115,11 @@ export function relativeTime(ts: number): string {
   return `${Math.floor(days / 30)}mo ago`;
 }
 
+/** Escape HTML special characters to prevent injection inside <details> blocks. */
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function extractUri(raw: unknown): string {
   if (typeof raw === 'string') { return raw; }
   if (raw && typeof raw === 'object' && 'path' in raw) {

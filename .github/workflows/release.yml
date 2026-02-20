@@ -62,3 +62,52 @@ jobs:
         with:
           artifacts: '*.vsix'
           generateReleaseNotes: true
+          prerelease: ${{ contains(github.ref_name, '-pre') || contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all VSIX artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate tag matches package version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_VERSION="${REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [[ "$TAG_VERSION" != "$PKG_VERSION" ]]; then
+            echo "Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+
+      - name: Publish to VS Code Marketplace
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          PRE_RELEASE_FLAG=""
+          if [[ "$REF_NAME" =~ -(pre|rc|beta|alpha) ]]; then
+            PRE_RELEASE_FLAG="--pre-release"
+          fi
+          shopt -s nullglob
+          vsix_files=(*.vsix)
+          if [[ ${#vsix_files[@]} -eq 0 ]]; then
+            echo "No VSIX files found"
+            exit 1
+          fi
+          for vsix in "${vsix_files[@]}"; do
+            npx @vscode/vsce publish $PRE_RELEASE_FLAG \
+              --pat "$VSCE_PAT" \
+              --packagePath "$vsix"
+          done

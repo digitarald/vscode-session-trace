@@ -17,7 +17,7 @@ interface SearchToolInput {
  * Language Model Tool for full-text search over chat conversation history
  * backed by SQLite FTS5.
  */
-export class SessionTraceSearchTool
+export class SearchChatSessionsTool
   implements vscode.LanguageModelTool<SearchToolInput>
 {
   constructor(private readonly db: ChatDatabase) {}
@@ -89,7 +89,7 @@ export class SessionTraceSearchTool
         const homeEscaped = os.homedir().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const safe = msg
           .replace(new RegExp(homeEscaped, 'g'), '~')
-          .replace(/(?:[A-Za-z]:[\\]|\/)[^\s"]*/g, '<path>');
+          .replace(/(?:[A-Za-z]:[\\/]|\/)[^\s"]*/g, '<path>');
         let hint: string | undefined;
         if (/no such column/i.test(msg)) {
           hint = 'Column not found. Available columns — sessions: session_id, title, creation_date, request_count, model_ids, agents, total_tokens, has_votes, storage_type, workspace_path; turns: id, session_id, turn_index, prompt_text, response_text, agent, model, timestamp, duration_ms, token_total, vote; annotations: id, turn_id, kind, name, uri, detail.';

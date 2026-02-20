@@ -90,6 +90,27 @@ export class JsonlSessionReader {
   }
 
   /**
+   * Enumerate all JSONL/JSON session files without reading them.
+   * Returns file paths and storage types only — no parsing, no stats.
+   * Use this for fast startup discovery before checking staleness.
+   */
+  async discoverSessionFiles(): Promise<{ filePath: string; storageType: SessionSummary['storageType'] }[]> {
+    await this.ensureDiscovered();
+    const results: { filePath: string; storageType: SessionSummary['storageType'] }[] = [];
+    for (const dir of this.storageDirs) {
+      try {
+        const files = (await fs.promises.readdir(dir.path)).filter(f => f.endsWith('.jsonl') || f.endsWith('.json'));
+        for (const file of files) {
+          results.push({ filePath: path.join(dir.path, file), storageType: dir.type });
+        }
+      } catch {
+        // Directory access error
+      }
+    }
+    return results;
+  }
+
+  /**
    * List all .jsonl session files across all storage directories.
    */
   async listAllSessions(maxAgeDays: number = 7): Promise<SessionSummary[]> {
@@ -107,7 +128,8 @@ export class JsonlSessionReader {
             batch.map(async (file) => {
               const filePath = path.join(dir.path, file);
               try {
-                return await this.parseSessionFile(filePath, dir.type);
+                const result = await this.parseSessionFile(filePath, dir.type);
+                return result?.summary ?? null;
               } catch (e) {
                 // Skip unparseable files
                 console.warn(`Failed to parse ${filePath}:`, e);
@@ -166,13 +188,16 @@ export class JsonlSessionReader {
 
   /**
    * Parse a session .jsonl file, replaying mutations for accurate counts.
+   * Returns both the summary and the full parsed data so callers can avoid
+   * a second readFullSession call.
    */
-  private async parseSessionFile(
+  async parseSessionFile(
     filePath: string,
-    storageType: SessionSummary['storageType']
-  ): Promise<SessionSummary | null> {
+    storageType: SessionSummary['storageType'],
+    preStats?: { size: number; mtimeMs: number },
+  ): Promise<{ summary: SessionSummary; data: SerializableChatData } | null> {
     const [stat, data] = await Promise.all([
-      fs.promises.stat(filePath),
+      preStats ? Promise.resolve(preStats) : fs.promises.stat(filePath),
       this.readFullSession(filePath),
     ]);
 
@@ -204,7 +229,7 @@ export class JsonlSessionReader {
       }
     }
 
-    return {
+    const summary: SessionSummary = {
       sessionId: data.sessionId,
       filePath,
       title: data.customTitle,
@@ -215,10 +240,12 @@ export class JsonlSessionReader {
       agents: [...agents],
       totalTokens,
       hasVotes,
-      fileSize: stat.size,
+      fileSize: 'size' in stat ? stat.size : 0,
       storageType,
       workspacePath: storageType === 'workspace' ? await this.resolveWorkspacePath(filePath) : '',
     };
+
+    return { summary, data };
   }
 
   /**

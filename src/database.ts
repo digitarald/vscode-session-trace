@@ -14,6 +14,8 @@ const SCHEMA_VERSION = 2;
  */
 export class ChatDatabase {
   private db: sqlite3.Database | null = null;
+  private indexingBarrier: Promise<void> | null = null;
+  private indexingBarrierResolve: (() => void) | null = null;
 
   constructor(private readonly dbPath: string) {}
 
@@ -38,6 +40,20 @@ export class ChatDatabase {
         err ? reject(err) : resolve();
       });
     });
+  }
+
+  beginIndexing(): void {
+    if (this.indexingBarrier) { return; }
+    this.indexingBarrier = new Promise((resolve) => {
+      this.indexingBarrierResolve = resolve;
+    });
+  }
+
+  endIndexing(): void {
+    if (!this.indexingBarrierResolve) { return; }
+    this.indexingBarrierResolve();
+    this.indexingBarrierResolve = null;
+    this.indexingBarrier = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -182,23 +198,29 @@ export class ChatDatabase {
 
   async upsertSession(s: SessionSummary, mtime: number): Promise<void> {
     await this.run(
-      `INSERT OR REPLACE INTO sessions
+      `INSERT INTO sessions
         (session_id, file_path, title, creation_date, request_count, last_message,
          model_ids, agents, total_tokens, has_votes, file_size, storage_type, workspace_path, file_mtime)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         file_path = excluded.file_path,
+         title = excluded.title,
+         creation_date = excluded.creation_date,
+         request_count = excluded.request_count,
+         last_message = excluded.last_message,
+         model_ids = excluded.model_ids,
+         agents = excluded.agents,
+         total_tokens = excluded.total_tokens,
+         has_votes = excluded.has_votes,
+         file_size = excluded.file_size,
+         storage_type = excluded.storage_type,
+         workspace_path = excluded.workspace_path,
+         file_mtime = excluded.file_mtime`,
       s.sessionId, s.filePath, s.title || null, s.creationDate, s.requestCount,
       s.lastMessage || null, s.modelIds.join(','), s.agents.join(','),
       s.totalTokens, s.hasVotes ? 1 : 0, s.fileSize, s.storageType,
       s.workspacePath, mtime,
     );
-  }
-
-  async isStale(filePath: string, currentMtime: number): Promise<boolean> {
-    const row = await this.get<{ file_mtime: number }>(
-      'SELECT file_mtime FROM sessions WHERE file_path = ?', filePath,
-    );
-    if (!row) { return true; } // not in DB yet
-    return row.file_mtime < currentMtime;
   }
 
   async listSessions(opts: {
@@ -208,6 +230,7 @@ export class ChatDatabase {
     limit?: number;
     offset?: number;
   } = {}): Promise<SessionSummary[]> {
+    await this.waitForIndexing();
     const conditions: string[] = [];
     const params: unknown[] = [];
 
@@ -259,7 +282,18 @@ export class ChatDatabase {
     await this.run(`DELETE FROM sessions WHERE session_id IN (${placeholders})`, ...sessionIds);
   }
 
-  async getAllSessionPaths(): Promise<Map<string, string>> {
+  async deleteSessionsByFilePath(filePath: string, exceptSessionId?: string): Promise<void> {
+    if (exceptSessionId) {
+      await this.run('DELETE FROM sessions WHERE file_path = ? AND session_id != ?', filePath, exceptSessionId);
+      return;
+    }
+    await this.run('DELETE FROM sessions WHERE file_path = ?', filePath);
+  }
+
+  async getAllSessionPaths(skipIndexingWait = false): Promise<Map<string, string>> {
+    if (!skipIndexingWait) {
+      await this.waitForIndexing();
+    }
     const rows = await this.all<{ session_id: string; file_path: string }>(
       'SELECT session_id, file_path FROM sessions',
     );
@@ -268,25 +302,54 @@ export class ChatDatabase {
     return map;
   }
 
+  /** Single bulk query returning filePath → stored mtime for all indexed sessions. */
+  async getAllSessionMtimes(skipIndexingWait = false): Promise<Map<string, number>> {
+    if (!skipIndexingWait) {
+      await this.waitForIndexing();
+    }
+    const rows = await this.all<{ file_path: string; file_mtime: number }>(
+      'SELECT file_path, file_mtime FROM sessions',
+    );
+    const map = new Map<string, number>();
+    for (const r of rows) { map.set(r.file_path, r.file_mtime); }
+    return map;
+  }
+
   // ---------------------------------------------------------------------------
   // Turn CRUD
   // ---------------------------------------------------------------------------
 
   async upsertTurn(t: TurnRow): Promise<number> {
-    // Single atomic statement — safe under concurrent Promise.all batches.
-    // Replaces old row (cascading annotation deletes) on UNIQUE conflict.
-    return this.runWithLastId(
-      `INSERT OR REPLACE INTO turns
+    await this.run(
+      `INSERT INTO turns
         (session_id, turn_index, prompt_text, response_text, agent, model,
          timestamp, duration_ms, token_total, token_prompt, token_completion, vote)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, turn_index) DO UPDATE SET
+         prompt_text = excluded.prompt_text,
+         response_text = excluded.response_text,
+         agent = excluded.agent,
+         model = excluded.model,
+         timestamp = excluded.timestamp,
+         duration_ms = excluded.duration_ms,
+         token_total = excluded.token_total,
+         token_prompt = excluded.token_prompt,
+         token_completion = excluded.token_completion,
+         vote = excluded.vote`,
       t.sessionId, t.turnIndex, t.promptText, t.responseText,
       t.agent, t.model, t.timestamp, t.durationMs,
       t.tokenTotal, t.tokenPrompt, t.tokenCompletion, t.vote,
     );
+    // Retrieve the actual row id — lastID is unreliable on ON CONFLICT UPDATE path
+    const row = await this.get<{ id: number }>(
+      'SELECT id FROM turns WHERE session_id = ? AND turn_index = ?',
+      t.sessionId, t.turnIndex,
+    );
+    return row!.id;
   }
 
   async getSessionTurns(sessionId: string): Promise<TurnRow[]> {
+    await this.waitForIndexing();
     const rows = await this.all<{
       id: number; session_id: string; turn_index: number;
       prompt_text: string; response_text: string; agent: string; model: string;
@@ -312,6 +375,10 @@ export class ChatDatabase {
     }));
   }
 
+  async deleteTurnsForSession(sessionId: string): Promise<void> {
+    await this.run('DELETE FROM turns WHERE session_id = ?', sessionId);
+  }
+
   // ---------------------------------------------------------------------------
   // Annotation CRUD
   // ---------------------------------------------------------------------------
@@ -330,6 +397,7 @@ export class ChatDatabase {
     sessionId?: string;
     limit?: number;
   } = {}): Promise<AnnotationRow[]> {
+    await this.waitForIndexing();
     const conditions: string[] = [];
     const params: unknown[] = [];
     let join = '';
@@ -366,6 +434,7 @@ export class ChatDatabase {
     daysBack?: number;
     limit?: number;
   } = {}): Promise<SearchResult[]> {
+    await this.waitForIndexing();
     if (!query.trim()) { return []; }
 
     // Build FTS5 match expression: add * for prefix matching on each term.
@@ -446,29 +515,32 @@ export class ChatDatabase {
    * Validates the statement is a SELECT and caps rows at MAX_QUERY_ROWS.
    */
   queryReadOnly(sql: string): Promise<{ rows: unknown[]; truncated: boolean }> {
+    const pending = this.waitForIndexing();
     if (!this.db) {
       return Promise.reject(new Error('Database is not open'));
     }
 
-    const trimmed = sql.trim();
-    if (!/^(SELECT|WITH)\b/i.test(trimmed)) {
-      return Promise.reject(new Error('Only SELECT statements are allowed'));
-    }
-    if (/\bRECURSIVE\b/i.test(trimmed)) {
-      return Promise.reject(new Error('Recursive CTEs are not supported'));
-    }
+    return pending.then(() => {
+      const trimmed = sql.trim();
+      if (!/^(SELECT|WITH)\b/i.test(trimmed)) {
+        return Promise.reject(new Error('Only SELECT statements are allowed'));
+      }
+      if (/\bRECURSIVE\b/i.test(trimmed)) {
+        return Promise.reject(new Error('Recursive CTEs are not supported'));
+      }
 
-    const limited = `SELECT * FROM (${trimmed}) LIMIT ${ChatDatabase.MAX_QUERY_ROWS + 1}`;
+      const limited = `SELECT * FROM (${trimmed}) LIMIT ${ChatDatabase.MAX_QUERY_ROWS + 1}`;
 
-    return new Promise((resolve, reject) => {
-      const ro = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
-        if (err) { return reject(err); }
-        ro.all(limited, [], (err2, rows) => {
-          ro.close(() => {/* best-effort close */});
-          if (err2) { return reject(err2); }
-          const all = (rows || []) as unknown[];
-          const truncated = all.length > ChatDatabase.MAX_QUERY_ROWS;
-          resolve({ rows: truncated ? all.slice(0, ChatDatabase.MAX_QUERY_ROWS) : all, truncated });
+      return new Promise((resolve, reject) => {
+        const ro = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
+          if (err) { return reject(err); }
+          ro.all(limited, [], (err2, rows) => {
+            ro.close(() => {/* best-effort close */});
+            if (err2) { return reject(err2); }
+            const all = (rows || []) as unknown[];
+            const truncated = all.length > ChatDatabase.MAX_QUERY_ROWS;
+            resolve({ rows: truncated ? all.slice(0, ChatDatabase.MAX_QUERY_ROWS) : all, truncated });
+          });
         });
       });
     });
@@ -479,6 +551,7 @@ export class ChatDatabase {
   // ---------------------------------------------------------------------------
 
   async getStats(): Promise<{ sessions: number; turns: number; annotations: number }> {
+    await this.waitForIndexing();
     const s = await this.get<{ c: number }>('SELECT COUNT(*) as c FROM sessions');
     const t = await this.get<{ c: number }>('SELECT COUNT(*) as c FROM turns');
     const a = await this.get<{ c: number }>('SELECT COUNT(*) as c FROM annotations');
@@ -495,6 +568,7 @@ export class ChatDatabase {
    * queries with a single call.
    */
   async describe(): Promise<Record<string, unknown>> {
+    await this.waitForIndexing();
     const [stats, kinds, models, agents, dateRange, topTools] = await Promise.all([
       this.getStats(),
       this.all<{ kind: string; c: number }>(
@@ -567,6 +641,24 @@ export class ChatDatabase {
     return new Promise((resolve, reject) => {
       this.db!.all(sql, params, (err, rows) => err ? reject(err) : resolve((rows || []) as T[]));
     });
+  }
+
+  async beginTransaction(): Promise<void> {
+    await this.run('BEGIN IMMEDIATE');
+  }
+
+  async commit(): Promise<void> {
+    await this.run('COMMIT');
+  }
+
+  async rollback(): Promise<void> {
+    await this.run('ROLLBACK');
+  }
+
+  private async waitForIndexing(): Promise<void> {
+    if (this.indexingBarrier) {
+      await this.indexingBarrier;
+    }
   }
 
   private exec(sql: string): Promise<void> {

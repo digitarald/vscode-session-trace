@@ -5,9 +5,21 @@ import { ChatDatabase } from './database';
 import { Indexer } from './indexer';
 import { SessionTreeProvider, SessionItem, SortBy, FilterType } from './sessionTreeView';
 import { registerSearchCommand } from './searchCommand';
-import { SessionTraceSearchTool } from './sessionTraceSearchTool';
+import { relativeTime, escapeHtml } from './utils';
+import { SearchChatSessionsTool } from './searchChatSessionsTool';
 
 let db: ChatDatabase;
+
+const escapeMarkdownInline = (value: string): string =>
+  escapeHtml(value).replace(/[`|*_]/g, '\\$&');
+
+const formatCodeSpan = (value: string): string => {
+  const safe = value.replace(/[\r\n]+/g, ' ');
+  const matches = safe.match(/`+/g) ?? [''];
+  const maxTicks = matches.reduce((max, current) => Math.max(max, current.length), 0);
+  const ticks = '`'.repeat(maxTicks + 1);
+  return `${ticks}${safe}${ticks}`;
+};
 
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('Session Trace');
@@ -48,6 +60,10 @@ export async function activate(context: vscode.ExtensionContext) {
   updateWorkspace();
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(updateWorkspace));
 
+  // updateViewDescription is defined later but we need to set it after indexing;
+  // defer so the description reflects defaults on first paint
+  queueMicrotask(() => updateViewDescription?.());
+
   // Background reindex on activation
   const indexDone = vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Session Trace', cancellable: false },
@@ -66,7 +82,7 @@ export async function activate(context: vscode.ExtensionContext) {
   vscode.window.withProgress({ location: { viewId: 'sessionTrace.jsonlSessions' } }, () => indexDone).then(undefined, () => {});
 
   // --- LM tool for agent search ---
-  const searchTool = new SessionTraceSearchTool(db);
+  const searchTool = new SearchChatSessionsTool(db);
   context.subscriptions.push(
     vscode.lm.registerTool(
       'sessionTrace_searchConversations',
@@ -111,6 +127,233 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
 
+    vscode.commands.registerCommand('sessionTrace.openSessionMarkdown', async (item: SessionItem) => {
+      let session: Awaited<ReturnType<typeof reader.readFullSession>>;
+      let rawLines: Awaited<ReturnType<typeof reader.readRawLines>>;
+      try {
+        [session, rawLines] = await Promise.all([
+          reader.readFullSession(item.session.filePath),
+          reader.readRawLines(item.session.filePath),
+        ]);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to read session: ${err}`);
+        return;
+      }
+      if (!session) {
+        vscode.window.showErrorMessage('Failed to read session');
+        return;
+      }
+
+      const rawTitle = (session.customTitle || session.sessionId).replace(/[\r\n]+/g, ' ');
+      const title = escapeHtml(rawTitle);
+      const creationDate = new Date(session.creationDate);
+      const allModelsRaw = [...new Set(session.requests.map(r => r.modelId).filter(Boolean))].join(', ');
+      const allAgentsRaw = [...new Set(session.requests.map(r => r.agent?.id || r.agent?.agentId).filter(Boolean))].join(', ');
+      const allModels = allModelsRaw ? escapeHtml(allModelsRaw).replace(/\|/g, '\\|') : '—';
+      const allAgents = allAgentsRaw ? escapeHtml(allAgentsRaw).replace(/\|/g, '\\|') : '—';
+      const totalTokens = session.requests.reduce((sum, r) => sum + (r.usage?.totalTokens ?? 0), 0);
+
+      const normalizeFileEdit = (raw: string): { key: string; label: string } | null => {
+        const trimmed = raw.trim();
+        if (!trimmed) { return null; }
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+          try {
+            const parsed = vscode.Uri.parse(trimmed);
+            const fsPath = parsed.fsPath || parsed.path || trimmed;
+            return { key: fsPath, label: path.basename(fsPath) };
+          } catch {
+            return null;
+          }
+        }
+        let decoded = trimmed;
+        try { decoded = decodeURIComponent(trimmed); } catch { /* ignore */ }
+        const cleaned = decoded.replace(/\\/g, '/');
+        return { key: cleaned, label: path.posix.basename(cleaned) || cleaned };
+      };
+
+
+      const lines: string[] = [
+        `# 💬 ${title}`,
+        '',
+        '| | |',
+        '|---|---|',
+        `| **Created** | ${creationDate.toLocaleString()} *(${relativeTime(session.creationDate)})* |`,
+        `| **Turns** | ${session.requests.length} |`,
+        `| **Models** | ${allModels} |`,
+        `| **Agents** | ${allAgents} |`,
+        ...(totalTokens > 0 ? [`| **Tokens** | ${totalTokens.toLocaleString()} |`] : []),
+        '',
+        '---',
+        '',
+      ];
+
+      const total = session.requests.length;
+      for (let i = 0; i < total; i++) {
+        const req = session.requests[i];
+        const model = req.modelId || '';
+        const agentId = req.agent?.id || req.agent?.agentId || '';
+        const turnLabel = `Turn ${i + 1} of ${total}`;
+        lines.push(`## ${turnLabel}`);
+        lines.push('');
+
+        // User prompt
+        lines.push('**👤 User**');
+        lines.push('');
+        const promptText = escapeHtml(req.message?.text || '*(empty)*');
+        // Indent each line of the prompt as a blockquote; preserve blank lines within the block
+        for (const promptLine of promptText.split('\n')) {
+          lines.push(promptLine ? `> ${promptLine}` : '>');
+        }
+        lines.push('');
+
+        // Check for context variables
+        if (req.variableData?.variables && req.variableData.variables.length > 0) {
+          const vars = req.variableData.variables.map(v => formatCodeSpan(v.name)).join(', ');
+          lines.push(`*Context: ${vars}*`);
+          lines.push('');
+        }
+
+        // Assistant response
+        const assistantLabelRaw = [model, agentId ? `@${agentId}` : ''].filter(Boolean).join(' · ');
+        const assistantLabel = escapeHtml(assistantLabelRaw).replace(/_/g, '\\_');
+        lines.push(`**🤖 Assistant**${assistantLabel ? ` *(${assistantLabel})*` : ''}`);
+        lines.push('');
+
+        // Collect parts for separate sections
+        const tools: Array<{ name: string; detail: string }> = [];
+        const thinkingBlocks: string[] = [];
+        const fileEdits: string[] = [];
+        const fileEditKeys = new Set<string>();
+        const pushFileEdit = (raw: string) => {
+          const normalized = normalizeFileEdit(raw);
+          if (!normalized || fileEditKeys.has(normalized.key)) { return; }
+          fileEditKeys.add(normalized.key);
+          fileEdits.push(escapeMarkdownInline(normalized.label));
+        };
+        const markdownChunks: string[] = [];
+
+        for (const part of req.response || []) {
+          switch (part.kind) {
+            case 'markdownContent': {
+              const content = part.content;
+              const text = typeof content === 'string'
+                ? content
+                : (content as { value?: string } | null)?.value || '';
+              if (text) { markdownChunks.push(escapeHtml(text)); }
+              break;
+            }
+            case 'toolInvocationSerialized': {
+              const rec = part as Record<string, unknown>;
+              const name = String(rec.toolId || rec.toolName || '');
+              const detail = String(rec.invocationMessage || rec.input || '');
+              if (name) { tools.push({ name, detail }); }
+              break;
+            }
+            case 'thinking': {
+              const content = part.content;
+              const text = typeof content === 'string'
+                ? content
+                : (content as { value?: string } | null)?.value || '';
+              if (text) { thinkingBlocks.push(text); }
+              break;
+            }
+            case 'textEditGroup':
+            case 'codeblockUri': {
+              const uri = part.uri;
+              let uriStr = '';
+              if (typeof uri === 'string') { uriStr = uri; }
+              else if (uri && typeof uri === 'object' && 'path' in uri) { uriStr = (uri as { path: string }).path; }
+              if (uriStr) { pushFileEdit(uriStr); }
+              break;
+            }
+          }
+        }
+        if (markdownChunks.length > 0) {
+          lines.push(markdownChunks.join('\n\n'));
+          lines.push('');
+        } else {
+          lines.push('*(no text response)*');
+          lines.push('');
+        }
+
+        if (tools.length > 0) {
+          lines.push(`<details>`);
+          lines.push(`<summary>🔧 Tools Used (${tools.length})</summary>`);
+          lines.push('');
+          for (const t of tools) {
+            const safeName = escapeMarkdownInline(t.name);
+            const safeDetail = t.detail ? escapeMarkdownInline(t.detail) : '';
+            lines.push(safeDetail ? `- **${safeName}** — ${safeDetail}` : `- **${safeName}**`);
+          }
+          lines.push('');
+          lines.push('</details>');
+          lines.push('');
+        }
+
+        if (thinkingBlocks.length > 0) {
+          lines.push('<details>');
+          lines.push('<summary>💭 Thinking</summary>');
+          lines.push('');
+          lines.push(thinkingBlocks.map(b => escapeHtml(b)).join('\n\n'));
+          lines.push('');
+          lines.push('</details>');
+          lines.push('');
+        }
+
+        if (fileEdits.length > 0) {
+          lines.push(`*📁 File edits: ${fileEdits.join(', ')}*`);
+          lines.push('');
+        }
+
+        // Per-turn stats as table
+        const hasStats = req.usage?.totalTokens || req.result?.timings?.totalElapsed;
+        if (hasStats) {
+          lines.push('| Tokens | Prompt | Completion | Duration |');
+          lines.push('|--------|--------|------------|----------|');
+          const tok = req.usage?.totalTokens?.toLocaleString() ?? '—';
+          const prompt = req.usage?.promptTokens?.toLocaleString() ?? '—';
+          const completion = req.usage?.completionTokens?.toLocaleString() ?? '—';
+          const duration = req.result?.timings?.totalElapsed
+            ? `${(req.result.timings.totalElapsed / 1000).toFixed(1)}s`
+            : '—';
+          lines.push(`| ${tok} | ${prompt} | ${completion} | ${duration} |`);
+          lines.push('');
+        }
+
+        if (req.vote) {
+          lines.push(req.vote === 1
+            ? '👍 Upvoted'
+            : `👎 Downvoted${req.voteDownReason ? ` — ${escapeHtml(req.voteDownReason)}` : ''}`);
+          lines.push('');
+        }
+
+        if (req.result?.errorDetails?.message) {
+          const errLines = req.result.errorDetails.message.split('\n');
+          for (const errLine of errLines) {
+            lines.push(errLine ? `> ⚠️ **Error**: ${escapeHtml(errLine)}` : '>');
+          }
+          lines.push('');
+        }
+
+        lines.push('---');
+        lines.push('');
+      }
+
+      lines.push('## 📦 Storage');
+      lines.push('');
+      lines.push(`- **JSONL lines**: ${rawLines.length} (1 initial + ${Math.max(0, rawLines.length - 1)} mutations)`);
+      lines.push(`- **File**: ${formatCodeSpan(item.session.filePath)}`);
+      lines.push(`- **Storage type**: ${item.session.storageType}`);
+      lines.push(`- **Session ID**: ${formatCodeSpan(session.sessionId)}`);
+
+      const doc = await vscode.workspace.openTextDocument({
+        content: lines.join('\n'),
+        language: 'markdown',
+      });
+      await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: true });
+      await vscode.commands.executeCommand('markdown.showPreview', doc.uri);
+    }),
+
     vscode.commands.registerCommand('sessionTrace.showSessionDetail', async (item: SessionItem) => {
       const session = await reader.readFullSession(item.session.filePath);
       if (!session) {
@@ -119,10 +362,11 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       // Show a quick summary in an untitled document
+      const sessionTitle = escapeHtml(session.customTitle || session.sessionId);
       const lines: string[] = [
-        `# Chat Session: ${session.customTitle || session.sessionId}`,
+        `# Chat Session: ${sessionTitle}`,
         '',
-        `- **Session ID**: ${session.sessionId}`,
+        `- **Session ID**: ${formatCodeSpan(session.sessionId)}`,
         `- **Created**: ${new Date(session.creationDate).toLocaleString()}`,
         `- **Turns**: ${session.requests.length}`,
         `- **Version**: ${session.version}`,
@@ -135,17 +379,23 @@ export async function activate(context: vscode.ExtensionContext) {
         const req = session.requests[i];
         lines.push(`## Turn ${i + 1}`);
         lines.push('');
-        lines.push(`**User** (${req.modelId || 'unknown model'}):`);
+        const userModel = req.modelId || 'unknown model';
+        lines.push(`**User** (${escapeMarkdownInline(userModel)}):`);
         lines.push('');
-        lines.push(`> ${req.message?.text || '(empty)'}`);
+        const promptText = escapeHtml(req.message?.text || '(empty)');
+        for (const promptLine of promptText.split('\n')) {
+          lines.push(promptLine ? `> ${promptLine}` : '>');
+        }
         lines.push('');
 
         if (req.agent?.id || req.agent?.agentId) {
-          lines.push(`*Agent*: ${req.agent.id || req.agent.agentId}`);
+          const agentLabel = req.agent.id || req.agent.agentId;
+          lines.push(`*Agent*: ${escapeMarkdownInline(agentLabel)}`);
         }
 
         if (req.variableData?.variables && req.variableData.variables.length > 0) {
-          lines.push(`*Context variables*: ${req.variableData.variables.map(v => v.name).join(', ')}`);
+          const vars = req.variableData.variables.map(v => formatCodeSpan(v.name)).join(', ');
+          lines.push(`*Context variables*: ${vars}`);
         }
 
         // Extract text from response parts
@@ -156,10 +406,11 @@ export async function activate(context: vscode.ExtensionContext) {
               ? part.content
               : (part.content as { value?: string })?.value || '';
             if (content) {
-              responseParts.push(content.substring(0, 500));
+              responseParts.push(escapeHtml(content.substring(0, 500)));
             }
           } else if (part.kind === 'toolInvocationSerialized') {
-            responseParts.push(`[Tool: ${(part as Record<string, unknown>).toolName || 'unknown'}]`);
+            const toolName = String((part as Record<string, unknown>).toolName || 'unknown');
+            responseParts.push(`[Tool: ${escapeMarkdownInline(toolName)}]`);
           } else if (part.kind === 'thinking') {
             responseParts.push(`[Thinking...]`);
           }
@@ -178,7 +429,8 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         if (req.vote) {
-          lines.push(`*Vote*: ${req.vote === 1 ? '👍' : '👎'}${req.voteDownReason ? ` (${req.voteDownReason})` : ''}`);
+          const downReason = req.voteDownReason ? ` (${escapeMarkdownInline(req.voteDownReason)})` : '';
+          lines.push(`*Vote*: ${req.vote === 1 ? '👍' : '👎'}${downReason}`);
         }
 
         lines.push('');
@@ -190,9 +442,9 @@ export async function activate(context: vscode.ExtensionContext) {
       const rawLines = await reader.readRawLines(item.session.filePath);
       lines.push(`## Storage Info`);
       lines.push('');
-      lines.push(`- **JSONL lines**: ${rawLines.length} (1 initial + ${rawLines.length - 1} mutations)`);
-      lines.push(`- **File**: ${item.session.filePath}`);
-      lines.push(`- **Storage type**: ${item.session.storageType}`);
+      lines.push(`- **JSONL lines**: ${rawLines.length} (1 initial + ${Math.max(0, rawLines.length - 1)} mutations)`);
+      lines.push(`- **File**: ${formatCodeSpan(item.session.filePath)}`);
+      lines.push(`- **Storage type**: ${escapeMarkdownInline(item.session.storageType)}`);
 
       const doc = await vscode.workspace.openTextDocument({
         content: lines.join('\n'),

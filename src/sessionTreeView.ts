@@ -28,8 +28,8 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   // view state
   private _viewMode: ViewMode = 'sessions';
   private _sortBy: SortBy = 'date';
-  private _filterType: FilterType = 'all';
-  private _filterDays = 0;
+  private _filterType: FilterType = 'current';
+  private _filterDays = 30;
   private _currentWorkspaceName: string | undefined;
 
   constructor(private readonly db: ChatDatabase) {}
@@ -106,7 +106,11 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
 
   private async _getSessionsRoot(): Promise<TreeItem[]> {
     if (this._filterType === 'current' && !this._currentWorkspaceName) {
-      const item = new DetailItem('No workspace open', 'Open a folder to filter by this workspace', '$(info)');
+      const item = new DetailItem(
+        'No workspace open',
+        'Open a folder or switch to All sessions in View Options',
+        '$(info)'
+      );
       item.command = { command: 'workbench.action.addRootFolder', title: 'Open Folder' };
       return [item];
     }
@@ -117,7 +121,15 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     }
 
     if (this._sessions.length === 0) {
-      return [new DetailItem('No sessions found', 'Check storage paths', '$(warning)')];
+      const hint = (this._filterType !== 'all' || this._filterDays > 0)
+        ? 'Try View Options to adjust workspace or time filters'
+        : 'Check storage paths';
+      return [new DetailItem('No sessions found', hint, '$(warning)')];
+    }
+
+    // When filtering to current workspace, show sessions directly without a root folder
+    if (this._filterType === 'current') {
+      return this._sessions.map(s => new SessionItem(s));
     }
 
     const grouped = new Map<string, SessionSummary[]>();
