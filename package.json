@@ -1,0 +1,228 @@
+{
+  "name": "vscode-session-trace",
+  "displayName": "Session Trace",
+  "description": "Explore VS Code Copilot Chat session files (.jsonl) and compare with sessionTrace API",
+  "version": "0.0.1",
+  "publisher": "digitarald",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/digitarald/vscode-session-trace"
+  },
+  "preview": true,
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
+  "keywords": [
+    "copilot",
+    "chat",
+    "history",
+    "search",
+    "sqlite"
+  ],
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languageModelTools": [
+      {
+        "name": "sessionTrace_searchConversations",
+        "displayName": "Search Session Trace",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "sessionTraceSearch",
+        "icon": "$(search)",
+        "userDescription": "Query your VS Code Copilot chat conversation history with full-text search or SQL",
+        "modelDescription": "Query a SQLite database of indexed VS Code Copilot chat history.\n\nModes (mutually exclusive):\n1. `describe` — Returns schema overview: table row counts, annotation kind distribution, top tools, top models/agents, date range, and actionable hints. **Always start here.**\n2. `query` — Full-text search via FTS5 (BM25 ranking, prefix matching). Supports OR/NOT operators.\n3. `sql` — Read-only SQL SELECT for aggregations, filters, JOINs. `scope`/`daysBack` are ignored — embed in WHERE.\n\nQuery strategy:\n- **Always call `describe: true` first** — it shows available annotation kinds, top tools, and hints. Follow the hints.\n- For \"what did I discuss about X\" → `query` mode\n- For \"how many/which/list all\" → `sql` mode with GROUP BY\n- If 0 rows returned, **switch approach** (FTS ↔ SQL, different table) — do NOT retry similar queries\n- Fan out independent queries in parallel — avoid serial single-tool COUNT queries\n\nFTS5 syntax (for `query` param and `MATCH` in SQL):\n- Implicit AND: `react hooks` (both required)\n- OR: `react OR vue OR angular` (any match)\n- NOT: `react NOT angular`\n- Prefix: automatic (`reac` → `react`, `reactive`)\n\nSchema:\n```\nsessions(session_id TEXT PK, file_path TEXT, title TEXT, creation_date INTEGER /*Unix ms*/, request_count INTEGER, last_message TEXT, model_ids TEXT /*comma-sep*/, agents TEXT /*comma-sep*/, total_tokens INTEGER, has_votes INTEGER /*0|1*/, storage_type TEXT, workspace_path TEXT, file_mtime INTEGER)\n\nturns(id INTEGER PK, session_id TEXT FK→sessions, turn_index INTEGER, prompt_text TEXT, response_text TEXT, agent TEXT, model TEXT, timestamp INTEGER /*Unix ms*/, duration_ms INTEGER, token_total INTEGER, token_prompt INTEGER, token_completion INTEGER, vote INTEGER /*NULL|1=up|2=down*/)\n\nannotations(id INTEGER PK, turn_id INTEGER FK→turns, kind TEXT, name TEXT, uri TEXT, detail TEXT)\n-- Indexed on (kind, name)\n\nturns_fts -- FTS5 over turns(prompt_text, response_text, agent, model)\n```\n\nAnnotation kinds — **check `describe` output for which exist**:\n- kind='tool' → name = tool function name (e.g. 'copilot_readFile', 'mcp_github_create_branch'). MCP tools have 'mcp_' prefix.\n- kind='file_edit' → name = filename, uri = full path\n- kind='file_ref' → name = reference name, uri = full path\n- kind='codeblock' → name = filename, uri = full path\n- kind='attachment' → name = variable name or id\n- kind='thinking' → detail = thought text (truncated)\n\nSQL examples:\n- Tool usage ranking: `SELECT name, COUNT(*) c FROM annotations WHERE kind='tool' GROUP BY name ORDER BY c DESC LIMIT 20`\n- MCP tools only: `SELECT name, COUNT(*) c FROM annotations WHERE kind='tool' AND name LIKE 'mcp_%' GROUP BY name ORDER BY c DESC LIMIT 20`\n- Tool usage by session: `SELECT a.name, COUNT(DISTINCT t.session_id) c FROM annotations a JOIN turns t ON a.turn_id=t.id WHERE a.kind='tool' AND a.name LIKE 'mcp_%' GROUP BY a.name ORDER BY c DESC LIMIT 20`\n- Models this week: `SELECT model, COUNT(*) c FROM turns WHERE timestamp > (strftime('%s','now')-604800)*1000 GROUP BY model ORDER BY c DESC LIMIT 20`\n- Files edited: `SELECT a.name, a.uri, COUNT(*) c FROM annotations a JOIN turns t ON a.turn_id=t.id WHERE a.kind='file_edit' GROUP BY a.name, a.uri ORDER BY c DESC LIMIT 20`\n- FTS OR search: `SELECT t.prompt_text, s.title FROM turns_fts JOIN turns t ON t.id=turns_fts.rowid JOIN sessions s ON s.session_id=t.session_id WHERE turns_fts MATCH 'react OR vue' ORDER BY turns_fts.rank LIMIT 10`\n\nRules: Always LIMIT (max 500). No placeholders (?). SELECT only.\nParallelize independent queries. Provide a `label` for each call.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Full-text search query (FTS5, BM25 ranked, prefix matching). Supports OR/NOT operators: 'term1 OR term2', 'term1 NOT term2'. Space-separated terms are implicit AND. Mutually exclusive with `sql`."
+            },
+            "sql": {
+              "type": "string",
+              "description": "A read-only SQL SELECT statement to run directly against the database. Must be a SELECT — writes are blocked at the connection level. Use for aggregations, complex filters, or joins the FTS path can't express. Mutually exclusive with `query`."
+            },
+            "describe": {
+              "type": "boolean",
+              "description": "Set to true to get a schema overview: table row counts, annotation kind distribution, top models, top agents, and date range. Always start here before writing queries. Mutually exclusive with `query` and `sql`."
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "currentWorkspace",
+                "allWorkspaces"
+              ],
+              "description": "Applies only to `query` mode. Filter to current workspace or search all. Defaults to allWorkspaces."
+            },
+            "daysBack": {
+              "type": "number",
+              "description": "Applies only to `query` mode. Restrict results to the last N days."
+            },
+            "label": {
+              "type": "string",
+              "description": "Optional short human-readable label shown in the UI instead of the raw query or SQL. Use to summarize the search intent concisely."
+            }
+          }
+        }
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vscode-session-trace",
+          "title": "Session Trace",
+          "icon": "$(history)"
+        }
+      ]
+    },
+    "views": {
+      "vscode-session-trace": [
+        {
+          "id": "sessionTrace.jsonlSessions",
+          "name": "Session Files"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sessionTrace.refresh",
+        "title": "Refresh Sessions",
+        "icon": "$(refresh)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.openSession",
+        "title": "Open Session File",
+        "icon": "$(go-to-file)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.copySessionJson",
+        "title": "Copy Session JSON",
+        "icon": "$(copy)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.showSessionDetail",
+        "title": "Show Session Detail",
+        "icon": "$(info)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.search",
+        "title": "Search Conversations",
+        "icon": "$(search)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.expandAll",
+        "title": "Expand All Sessions",
+        "icon": "$(expand-all)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.viewAsRecent",
+        "title": "Switch to Recent View",
+        "icon": "$(history)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.viewAsSessions",
+        "title": "Switch to Sessions View",
+        "icon": "$(list-tree)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.sortSessions",
+        "title": "Sort Sessions",
+        "icon": "$(arrow-up)",
+        "category": "Session Trace"
+      },
+      {
+        "command": "sessionTrace.filterSessions",
+        "title": "Filter Sessions",
+        "icon": "$(filter)",
+        "category": "Session Trace"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sessionTrace.search",
+          "when": "view == sessionTrace.jsonlSessions",
+          "group": "navigation"
+        },
+        {
+          "command": "sessionTrace.refresh",
+          "when": "view == sessionTrace.jsonlSessions",
+          "group": "navigation"
+        },
+        {
+          "command": "sessionTrace.sortSessions",
+          "when": "view == sessionTrace.jsonlSessions",
+          "group": "navigation"
+        },
+        {
+          "command": "sessionTrace.filterSessions",
+          "when": "view == sessionTrace.jsonlSessions",
+          "group": "navigation"
+        },
+        {
+          "command": "sessionTrace.viewAsRecent",
+          "when": "view == sessionTrace.jsonlSessions && sessionTraceViewMode == sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "sessionTrace.viewAsSessions",
+          "when": "view == sessionTrace.jsonlSessions && sessionTraceViewMode == recent",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sessionTrace.openSession",
+          "when": "view == sessionTrace.jsonlSessions && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "sessionTrace.copySessionJson",
+          "when": "view == sessionTrace.jsonlSessions && viewItem == session",
+          "group": "1_actions"
+        },
+        {
+          "command": "sessionTrace.showSessionDetail",
+          "when": "view == sessionTrace.jsonlSessions && viewItem == session",
+          "group": "1_actions"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.99.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vscode/vsce": "^3.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@vscode/sqlite3": "^5.1.12-vscode"
+  }
+}
