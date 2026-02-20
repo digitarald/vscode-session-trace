@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { SerializableChatData, MutationEntry, SessionSummary } from './types';
 
 /**
@@ -201,7 +202,7 @@ export class JsonlSessionReader {
       this.readFullSession(filePath),
     ]);
 
-    if (!data || !data.requests) {
+    if (!data || !Array.isArray(data.requests)) {
       return null;
     }
 
@@ -398,16 +399,92 @@ export class JsonlSessionReader {
     const workspaceJsonPath = path.join(workspaceHashDir, 'workspace.json');
     try {
       const content = await fs.promises.readFile(workspaceJsonPath, 'utf-8');
-      const data = JSON.parse(content);
-      if (data.folder && typeof data.folder === 'string') {
-        // "file:///Users/user/project" → "project"
-        const folderUrl = new URL(data.folder);
-        return path.basename(folderUrl.pathname);
+      const data = JSON.parse(content) as Record<string, unknown>;
+      const id = this.extractWorkspaceId(data);
+      if (id) {
+        return this.normalizeWorkspaceId(id);
       }
     } catch {
       // Not a workspace storage dir (global/transferred) or unreadable
     }
     return '';
+  }
+
+  private normalizeWorkspaceId(value: string): string {
+    const trimmed = value.trim();
+    const isDrivePath = /^[A-Za-z]:/.test(trimmed);
+    const isUriLike = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed);
+    if (isUriLike && !isDrivePath) {
+      try {
+        const url = new URL(trimmed);
+        if (url.protocol === 'file:') {
+          return this.normalizeFsPath(fileURLToPath(url));
+        }
+        return url.toString();
+      } catch {
+        return trimmed;
+      }
+    }
+    return this.normalizeFsPath(trimmed);
+  }
+
+  private normalizeFsPath(value: string): string {
+    const normalized = path.normalize(value);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  }
+
+  private extractWorkspaceId(data: Record<string, unknown>): string | undefined {
+    const workspace = data.workspace;
+    if (workspace && typeof workspace === 'object') {
+      const configPath = (workspace as { configPath?: unknown }).configPath;
+      if (typeof configPath === 'string') {
+        return configPath;
+      }
+      const folders = (workspace as { folders?: unknown }).folders;
+      const folderFromWorkspace = this.extractFolderFromList(folders);
+      if (folderFromWorkspace) {
+        return folderFromWorkspace;
+      }
+    }
+
+    const configPath = (data as { configPath?: unknown }).configPath;
+    if (typeof configPath === 'string') {
+      return configPath;
+    }
+
+    const folders = (data as { folders?: unknown }).folders;
+    const folderFromData = this.extractFolderFromList(folders);
+    if (folderFromData) {
+      return folderFromData;
+    }
+
+    const folder = (data as { folder?: unknown }).folder;
+    if (typeof folder === 'string') {
+      return folder;
+    }
+
+    return undefined;
+  }
+
+  private extractFolderFromList(folders: unknown): string | undefined {
+    if (!Array.isArray(folders) || folders.length === 0) {
+      return undefined;
+    }
+    const first = folders[0];
+    if (typeof first === 'string') {
+      return first;
+    }
+    if (first && typeof first === 'object') {
+      const uri = (first as { uri?: unknown }).uri;
+      if (typeof uri === 'string') {
+        return uri;
+      }
+      const folderPath = (first as { path?: unknown }).path;
+      if (typeof folderPath === 'string') {
+        return folderPath;
+      }
+    }
+    return undefined;
   }
 
   /**

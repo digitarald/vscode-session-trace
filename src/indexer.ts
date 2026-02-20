@@ -48,7 +48,7 @@ export class Indexer {
       try {
         const stat = await fs.promises.stat(filePath);
         const known = knownMtimes.get(filePath);
-        if (known === undefined || known < stat.mtimeMs) {
+        if (known === undefined || known !== stat.mtimeMs) {
           toIndex.push({ filePath, storageType, mtime: stat.mtimeMs, fileSize: stat.size });
         } else {
           skipped++;
@@ -124,7 +124,7 @@ export class Indexer {
   }
 
   private async indexSession(summary: SessionSummary, data: SerializableChatData, mtime: number): Promise<void> {
-    if (!data.requests) { return; }
+    if (!Array.isArray(data.requests)) { return; }
 
     this.db.beginIndexing();
     let txStarted = false;
@@ -164,6 +164,13 @@ export class Indexer {
           ...attachmentAnnotations,
         ].filter(a => a.kind === 'tool' || (a.kind === 'thinking' && a.detail) || a.name || a.uri || a.detail);
 
+        const turnTimestamp = (typeof req.timestamp === 'number' && req.timestamp > 0)
+          ? req.timestamp
+          : (typeof data.creationDate === 'number' && data.creationDate > 0)
+            ? data.creationDate
+            : (typeof summary.creationDate === 'number' && summary.creationDate > 0)
+              ? summary.creationDate
+              : mtime;
         const turnId = await this.db.upsertTurn({
           sessionId: data.sessionId,
           turnIndex: i,
@@ -171,7 +178,7 @@ export class Indexer {
           responseText,
           agent: req.agent?.id || req.agent?.agentId || '',
           model: req.modelId || '',
-          timestamp: req.timestamp || data.creationDate || 0,
+          timestamp: turnTimestamp,
           durationMs: req.result?.timings?.totalElapsed || 0,
           tokenTotal: req.usage?.totalTokens || 0,
           tokenPrompt: req.usage?.promptTokens || 0,

@@ -1,7 +1,7 @@
 import * as sqlite3 from '@vscode/sqlite3';
 import { SessionSummary, TurnRow, AnnotationRow, SearchResult } from './types';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /**
  * SQLite-backed persistent store for chat session data.

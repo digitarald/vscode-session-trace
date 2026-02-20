@@ -30,7 +30,8 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   private _sortBy: SortBy = 'date';
   private _filterType: FilterType = 'current';
   private _filterDays = 30;
-  private _currentWorkspaceName: string | undefined;
+  private _currentWorkspaceId: string | undefined;
+  private _currentWorkspaceLabel: string | undefined;
 
   constructor(private readonly db: ChatDatabase) {}
 
@@ -39,8 +40,9 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   get filterType(): FilterType { return this._filterType; }
   get filterDays(): number { return this._filterDays; }
 
-  setCurrentWorkspace(name: string | undefined): void {
-    this._currentWorkspaceName = name;
+  setCurrentWorkspace(id: string | undefined, label?: string): void {
+    this._currentWorkspaceId = id;
+    this._currentWorkspaceLabel = label;
     if (this._filterType === 'current') {
       this._invalidate();
     }
@@ -105,7 +107,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   }
 
   private async _getSessionsRoot(): Promise<TreeItem[]> {
-    if (this._filterType === 'current' && !this._currentWorkspaceName) {
+    if (this._filterType === 'current' && !this._currentWorkspaceId) {
       const item = new DetailItem(
         'No workspace open',
         'Open a folder or switch to All sessions in View Options',
@@ -159,7 +161,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     const opts: { maxAgeDays?: number; storageType?: string; workspacePath?: string } = {};
     if (this._filterType === 'current') {
       opts.storageType = 'workspace';
-      opts.workspacePath = this._currentWorkspaceName;
+      opts.workspacePath = this._currentWorkspaceId;
     } else if (this._filterType !== 'all') {
       opts.storageType = this._filterType;
     }
@@ -181,7 +183,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   }
 
   private _getRecentRoot(): TreeItem[] {
-    if (this._filterType === 'current' && !this._currentWorkspaceName) {
+    if (this._filterType === 'current' && !this._currentWorkspaceId) {
       const item = new MessageDetailItem('No workspace open', 'Open a folder to filter by this workspace', 'info');
       item.command = { command: 'workbench.action.addRootFolder', title: 'Open Folder' };
       return [item];
@@ -205,7 +207,10 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
       items.push(new MessageDetailItem('No sessions found', 'Refresh to scan', 'warning'));
     } else if (this._recentLoadingDone && this._recentFullBatch) {
       const filterParts: string[] = [];
-      if (this._filterType === 'current') { filterParts.push(`in ${this._currentWorkspaceName}`); }
+      if (this._filterType === 'current') {
+        const label = this._currentWorkspaceLabel ?? this._currentWorkspaceId ?? 'current workspace';
+        filterParts.push(`in ${label}`);
+      }
       else if (this._filterType === 'workspace') { filterParts.push('across all workspaces'); }
       else if (this._filterType === 'global') { filterParts.push('in empty windows'); }
       else if (this._filterType === 'transferred') { filterParts.push('transferred sessions'); }

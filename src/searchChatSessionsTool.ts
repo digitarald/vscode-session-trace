@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { ChatDatabase } from './database';
 import { relativeTime } from './utils';
 
@@ -21,6 +22,45 @@ export class SearchChatSessionsTool
   implements vscode.LanguageModelTool<SearchToolInput>
 {
   constructor(private readonly db: ChatDatabase) {}
+
+  private normalizeWorkspaceId(value: vscode.Uri | string): string {
+    if (typeof value !== 'string') {
+      if (value.scheme !== 'file') {
+        return value.toString();
+      }
+      return this.normalizeFsPath(value.fsPath);
+    }
+
+    const trimmed = value.trim();
+    const isDrivePath = /^[A-Za-z]:/.test(trimmed);
+    const isUriLike = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed);
+    if (isUriLike && !isDrivePath) {
+      try {
+        const url = new URL(trimmed);
+        if (url.protocol === 'file:') {
+          return this.normalizeFsPath(fileURLToPath(url));
+        }
+        return url.toString();
+      } catch {
+        return trimmed;
+      }
+    }
+
+    return this.normalizeFsPath(trimmed);
+  }
+
+  private normalizeFsPath(value: string): string {
+    const normalized = path.normalize(value);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  }
+
+  private scrubPathFromError(message: string): string {
+    const homeEscaped = os.homedir().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pathPattern = /(?:[A-Za-z]:|\\\\\?\\|\\\\)[^\r\n"]+|\/[^\s"]+/g;
+    return message
+      .replace(new RegExp(homeEscaped, 'g'), '~')
+      .replace(pathPattern, '<path>');
+  }
 
   async invoke(
     options: vscode.LanguageModelToolInvocationOptions<SearchToolInput>,
@@ -86,10 +126,7 @@ export class SearchChatSessionsTool
         const msg = e instanceof Error ? e.message : 'Query failed';
         // Strip filesystem paths from error messages (Unix and Windows)
         // Replace home dir first (handles paths with spaces), then remaining absolute paths
-        const homeEscaped = os.homedir().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const safe = msg
-          .replace(new RegExp(homeEscaped, 'g'), '~')
-          .replace(/(?:[A-Za-z]:[\\/]|\/)[^\s"]*/g, '<path>');
+        const safe = this.scrubPathFromError(msg);
         let hint: string | undefined;
         if (/no such column/i.test(msg)) {
           hint = 'Column not found. Available columns — sessions: session_id, title, creation_date, request_count, model_ids, agents, total_tokens, has_votes, storage_type, workspace_path; turns: id, session_id, turn_index, prompt_text, response_text, agent, model, timestamp, duration_ms, token_total, vote; annotations: id, turn_id, kind, name, uri, detail.';
@@ -109,9 +146,14 @@ export class SearchChatSessionsTool
 
     let wsScope: string | undefined;
     if (scope === 'currentWorkspace') {
-      const wsFolder = vscode.workspace.workspaceFolders?.[0];
-      if (wsFolder) {
-        wsScope = path.basename(wsFolder.uri.fsPath);
+      const wsFile = vscode.workspace.workspaceFile;
+      if (wsFile) {
+        wsScope = this.normalizeWorkspaceId(wsFile);
+      } else {
+        const wsFolder = vscode.workspace.workspaceFolders?.[0];
+        if (wsFolder) {
+          wsScope = this.normalizeWorkspaceId(wsFolder.uri);
+        }
       }
     }
 
@@ -144,10 +186,7 @@ export class SearchChatSessionsTool
       ]);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Search failed';
-      const homeEscaped2 = os.homedir().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const safe = msg
-        .replace(new RegExp(homeEscaped2, 'g'), '~')
-        .replace(/(?:[A-Za-z]:[\\/]|\/)[^\s"]*/g, '<path>');
+      const safe = this.scrubPathFromError(msg);
       return new vscode.LanguageModelToolResult([
         new vscode.LanguageModelTextPart(JSON.stringify({ error: safe, hint: 'FTS search failed. Try simpler search terms (single words work best). Use \'term1 OR term2\' for any-match semantics. Or use the \'sql\' parameter with LIKE for flexible text matching.' })),
       ]);

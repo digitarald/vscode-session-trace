@@ -21,6 +21,27 @@ const formatCodeSpan = (value: string): string => {
   return `${ticks}${safe}${ticks}`;
 };
 
+const normalizeWorkspaceId = (uri: vscode.Uri): string => {
+  if (uri.scheme !== 'file') {
+    return uri.toString();
+  }
+  const normalized = path.normalize(uri.fsPath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+};
+
+const getWorkspaceIdentity = (): { id?: string; label?: string } => {
+  const wsFile = vscode.workspace.workspaceFile;
+  if (wsFile) {
+    const labelPath = wsFile.scheme === 'file' ? wsFile.fsPath : wsFile.path;
+    return { id: normalizeWorkspaceId(wsFile), label: path.basename(labelPath) };
+  }
+  const wsFolder = vscode.workspace.workspaceFolders?.[0];
+  if (wsFolder) {
+    return { id: normalizeWorkspaceId(wsFolder.uri), label: wsFolder.name };
+  }
+  return {};
+};
+
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('Session Trace');
   context.subscriptions.push(outputChannel);
@@ -55,8 +76,10 @@ export async function activate(context: vscode.ExtensionContext) {
   await vscode.commands.executeCommand('setContext', 'sessionTraceViewMode', 'sessions');
 
   // Seed and track current workspace name for filtering
-  const updateWorkspace = () =>
-    sessionTree.setCurrentWorkspace(vscode.workspace.workspaceFolders?.[0]?.name);
+  const updateWorkspace = () => {
+    const { id, label } = getWorkspaceIdentity();
+    sessionTree.setCurrentWorkspace(id, label);
+  };
   updateWorkspace();
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(updateWorkspace));
 
@@ -156,7 +179,9 @@ export async function activate(context: vscode.ExtensionContext) {
       const normalizeFileEdit = (raw: string): { key: string; label: string } | null => {
         const trimmed = raw.trim();
         if (!trimmed) { return null; }
-        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+        const isDrivePath = /^[A-Za-z]:/.test(trimmed);
+        const isUriLike = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed);
+        if (isUriLike && !isDrivePath) {
           try {
             const parsed = vscode.Uri.parse(trimmed);
             const fsPath = parsed.fsPath || parsed.path || trimmed;
