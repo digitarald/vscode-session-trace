@@ -9,6 +9,8 @@ export type FilterType = 'all' | 'current' | 'workspace' | 'global' | 'transferr
 type TreeItem = CategoryItem | SessionItem | DetailItem | SessionHeaderItem | MessageItem | MessageDetailItem;
 
 export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
+  private static readonly RECENT_LIMIT = 10;
+
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
@@ -19,6 +21,8 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   private _recentSessions: { summary: SessionSummary; turns: TurnRow[] }[] = [];
   private _recentLoading = false;
   private _recentLoadingDone = false;
+  private _recentError = false;
+  private _recentFullBatch = false; // true when DB returned RECENT_LIMIT rows (more may exist)
   private _recentGeneration = 0;
 
   // view state
@@ -37,39 +41,38 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
 
   setCurrentWorkspace(name: string | undefined): void {
     this._currentWorkspaceName = name;
+    if (this._filterType === 'current') {
+      this._invalidate();
+    }
   }
 
   setViewMode(mode: ViewMode): void {
     this._viewMode = mode;
-    this.refresh();
+    this._invalidate();
   }
 
   setSortBy(sort: SortBy): void {
     this._sortBy = sort;
-    this._sessions = [];
-    this._recentSessions = [];
-    this._recentLoadingDone = false;
-    this._recentLoading = false;
-    this._recentGeneration++;
-    this._onDidChangeTreeData.fire();
+    this._invalidate();
   }
 
   setFilter(type: FilterType, days: number): void {
     this._filterType = type;
     this._filterDays = days;
-    this._sessions = [];
-    this._recentSessions = [];
-    this._recentLoadingDone = false;
-    this._recentLoading = false;
-    this._recentGeneration++;
-    this._onDidChangeTreeData.fire();
+    this._invalidate();
   }
 
   refresh(): void {
+    this._invalidate();
+  }
+
+  private _invalidate(): void {
     this._sessions = [];
     this._recentSessions = [];
     this._recentLoading = false;
     this._recentLoadingDone = false;
+    this._recentError = false;
+    this._recentFullBatch = false;
     this._recentGeneration++;
     this._onDidChangeTreeData.fire();
   }
@@ -102,6 +105,11 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   }
 
   private async _getSessionsRoot(): Promise<TreeItem[]> {
+    if (this._filterType === 'current' && !this._currentWorkspaceName) {
+      const item = new DetailItem('No workspace open', 'Open a folder to filter by this workspace', '$(info)');
+      item.command = { command: 'workbench.action.addRootFolder', title: 'Open Folder' };
+      return [item];
+    }
     if (this._sessions.length === 0) {
       const opts = this._buildListOpts();
       this._sessions = await this.db.listSessions(opts);
@@ -138,6 +146,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   private _buildListOpts(): { maxAgeDays?: number; storageType?: string; workspacePath?: string } {
     const opts: { maxAgeDays?: number; storageType?: string; workspacePath?: string } = {};
     if (this._filterType === 'current') {
+      opts.storageType = 'workspace';
       opts.workspacePath = this._currentWorkspaceName;
     } else if (this._filterType !== 'all') {
       opts.storageType = this._filterType;
@@ -160,6 +169,14 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   }
 
   private _getRecentRoot(): TreeItem[] {
+    if (this._filterType === 'current' && !this._currentWorkspaceName) {
+      const item = new MessageDetailItem('No workspace open', 'Open a folder to filter by this workspace', 'info');
+      item.command = { command: 'workbench.action.addRootFolder', title: 'Open Folder' };
+      return [item];
+    }
+    if (this._recentError) {
+      return [new MessageDetailItem('Failed to load sessions', 'Refresh to retry', 'warning')];
+    }
     if (!this._recentLoading && !this._recentLoadingDone) {
       this._startRecentLoading();
     }
@@ -174,6 +191,19 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
       ));
     } else if (items.length === 0) {
       items.push(new MessageDetailItem('No sessions found', 'Refresh to scan', 'warning'));
+    } else if (this._recentLoadingDone && this._recentFullBatch) {
+      const filterParts: string[] = [];
+      if (this._filterType === 'current') { filterParts.push(`in ${this._currentWorkspaceName}`); }
+      else if (this._filterType === 'workspace') { filterParts.push('across all workspaces'); }
+      else if (this._filterType === 'global') { filterParts.push('in empty windows'); }
+      else if (this._filterType === 'transferred') { filterParts.push('transferred sessions'); }
+      if (this._filterDays > 0) { filterParts.push(`from the last ${this._filterDays} days`); }
+      const context = filterParts.length > 0 ? ` ${filterParts.join(', ')}` : '';
+      items.push(new MessageDetailItem(
+        `Showing ${SessionTreeProvider.RECENT_LIMIT} most recent${context}`,
+        'Switch to Sessions view to browse all',
+        'info',
+      ));
     }
     return items;
   }
@@ -189,19 +219,22 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     }).catch(() => {
       if (this._recentGeneration !== generation) { return; }
       this._recentLoading = false;
+      this._recentError = true;
       this._onDidChangeTreeData.fire();
     });
   }
 
   private async _loadRecentSessions(generation: number): Promise<void> {
-    const opts = { ...this._buildListOpts(), limit: 10 };
+    const opts = { ...this._buildListOpts(), limit: SessionTreeProvider.RECENT_LIMIT };
     const summaries = await this.db.listSessions(opts);
     if (this._recentGeneration !== generation) { return; }
+    this._recentFullBatch = summaries.length >= SessionTreeProvider.RECENT_LIMIT;
 
     const BATCH_SIZE = 3;
     for (let i = 0; i < summaries.length; i += BATCH_SIZE) {
       if (this._recentGeneration !== generation) { return; }
       const batch = summaries.slice(i, i + BATCH_SIZE);
+      const isLastBatch = i + BATCH_SIZE >= summaries.length;
       const results = await Promise.all(
         batch.map(async (summary) => {
           const turns = await this.db.getSessionTurns(summary.sessionId);
@@ -212,8 +245,22 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeItem> {
       for (const result of results) {
         if (result) { this._recentSessions.push(result); }
       }
+      // Only sort on the final batch to avoid visible mid-load reordering
+      if (isLastBatch) { this._applySortRecentSessions(); }
       this._onDidChangeTreeData.fire();
     }
+  }
+
+  private _applySortRecentSessions(): void {
+    if (this._sortBy === 'date') { return; }
+    this._recentSessions.sort((a, b) => {
+      if (this._sortBy === 'turns') {
+        return b.summary.requestCount - a.summary.requestCount;
+      }
+      const aName = (a.summary.title || a.summary.lastMessage || a.summary.sessionId).toLowerCase();
+      const bName = (b.summary.title || b.summary.lastMessage || b.summary.sessionId).toLowerCase();
+      return aName.localeCompare(bName);
+    });
   }
 
   private _getSessionDetails(session: SessionSummary): DetailItem[] {

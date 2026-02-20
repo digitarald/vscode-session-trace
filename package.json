@@ -124,12 +124,6 @@
         "category": "Session Trace"
       },
       {
-        "command": "sessionTrace.expandAll",
-        "title": "Expand All Sessions",
-        "icon": "$(expand-all)",
-        "category": "Session Trace"
-      },
-      {
         "command": "sessionTrace.viewAsRecent",
         "title": "Switch to Recent View",
         "icon": "$(history)",
@@ -138,12 +132,12 @@
       {
         "command": "sessionTrace.viewAsSessions",
         "title": "Switch to Sessions View",
-        "icon": "$(list-tree)",
+        "icon": "$(versions)",
         "category": "Session Trace"
       },
       {
         "command": "sessionTrace.viewOptions",
-        "title": "Sort & Filter",
+        "title": "Sort & Filter…",
         "icon": "$(filter)",
         "category": "Session Trace"
       }
