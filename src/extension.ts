@@ -389,7 +389,7 @@ export async function activate(context: vscode.ExtensionContext) {
         lines.push('');
 
         if (req.agent?.id || req.agent?.agentId) {
-          const agentLabel = req.agent.id || req.agent.agentId;
+          const agentLabel = (req.agent.id || req.agent.agentId)!;
           lines.push(`*Agent*: ${escapeMarkdownInline(agentLabel)}`);
         }
 
