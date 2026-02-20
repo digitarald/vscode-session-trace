@@ -1,5 +1,7 @@
 # Session Trace
 
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=digitarald.vscode-session-trace)
+[![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=flat-square&logo=visualstudiocode)](https://insiders.vscode.dev/editor/open/extension/digitarald.vscode-session-trace)
 [![Build](https://github.com/digitarald/vscode-session-trace/actions/workflows/build.yml/badge.svg)](https://github.com/digitarald/vscode-session-trace/actions/workflows/build.yml)
 
 > **Your Copilot Chat history, made searchable and queryable.**
