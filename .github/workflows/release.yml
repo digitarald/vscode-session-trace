@@ -1,10 +1,9 @@
-name: Build VSIX
+name: Release VSIX
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -45,3 +44,21 @@ jobs:
           name: vsix-${{ matrix.target }}
           path: '*.vsix'
           if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all VSIX artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: '*.vsix'
+          generateReleaseNotes: true
