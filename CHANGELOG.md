@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.0.4] - 2026-02-25
+
+### Fixed
+- Extension now runs on the UI side (`extensionKind: ["ui"]`) so it correctly finds chat session files in WSL, SSH, and Dev Container scenarios (fixes #2)
+
 ## [0.0.3] - 2026-02-20
 
 ### Changed
