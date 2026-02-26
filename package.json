@@ -10,6 +10,7 @@
     "type": "git",
     "url": "https://github.com/digitarald/vscode-session-trace"
   },
+  "extensionKind": ["ui"],
   "preview": true,
   "galleryBanner": {
     "color": "#1e1e2e",
