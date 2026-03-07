@@ -35,6 +35,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Fetch native sqlite3 for WinARM64
+        if: matrix.target == 'win32-arm64'
+        run: |
+          mkdir -p node_modules/@vscode/sqlite3/build/Release
+          curl -L "https://github.com/AppThreat/node-sqlite3/releases/download/v7.0.3/sqlite3-v7.0.3-napi-v10-win32-arm64.tar.gz" -o sqlite3.tar.gz
+          tar -xzf sqlite3.tar.gz
+          cp build/Release/node_sqlite3.node node_modules/@vscode/sqlite3/build/Release/vscode-sqlite3.node
+        shell: bash
+
       - name: Compile
         run: npm run compile
 

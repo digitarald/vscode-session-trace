@@ -9,3 +9,6 @@ package-lock.json
 eslint.config.mjs
 .gitignore
 .github/**
+node_modules/sqlite-electron/python/share/terminfo/**
+node_modules/sqlite-electron/python/share/**
+node_modules/sqlite-electron/python/**
