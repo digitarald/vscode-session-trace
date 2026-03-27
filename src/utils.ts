@@ -32,17 +32,32 @@ export function extractResponseParts(parts: SerializableChatResponsePart[]): Ext
       case 'toolInvocationSerialized': {
         const rec = part as Record<string, unknown>;
         // VS Code uses toolId (newer) or toolName (older) for the tool name
-        const toolName = String(rec.toolId || rec.toolName || '');
+        let toolName = String(rec.toolId || rec.toolName || '');
         // invocationMessage is the user-visible description; input is legacy
-        const detail = String(rec.invocationMessage || rec.input || '');
+        let detail = String(rec.invocationMessage || rec.input || '');
+        let uri = '';
+
+        // Extract structured data from toolSpecificData (currently: terminal commands)
+        const tsd = rec.toolSpecificData as Record<string, unknown> | undefined;
+        if (tsd && typeof tsd === 'object' && tsd.kind === 'terminal') {
+          if (!toolName) { toolName = 'run_in_terminal'; }
+          const cmdLine = tsd.commandLine as { original?: string } | undefined;
+          if (cmdLine?.original) {
+            detail = cmdLine.original;
+          }
+          const cwd = tsd.cwd as { path?: string; fsPath?: string } | undefined;
+          uri = cwd?.fsPath || cwd?.path || '';
+        }
+
         if (toolName) { texts.push(toolName); }
         if (detail) { texts.push(detail); }
+        if (uri) { texts.push(uri); }
         // Always keep tool annotations even with empty detail
         if (toolName) {
           annotations.push({
             kind: 'tool',
             name: toolName,
-            uri: '',
+            uri,
             detail: detail.substring(0, 500),
           });
         }

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.6] - 2026-03-26
+
+### Added
+- Terminal command extraction: `run_in_terminal` tool invocations now store the command line and working directory as structured annotations (detail and uri fields)
+- Terminal commands are searchable via FTS and queryable via SQL annotations
+- Describe output includes terminal command query hints when `run_in_terminal` annotations exist
+
 ## [0.0.5] - 2026-03-03
 
 ### Added

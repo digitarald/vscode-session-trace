@@ -592,6 +592,9 @@ export class ChatDatabase {
     const hints: string[] = [];
     if (kindNames.has('tool') && topTools.length > 0) {
       hints.push('Tool annotations are available. Query with: SELECT name, COUNT(*) c FROM annotations WHERE kind=\'tool\' GROUP BY name ORDER BY c DESC LIMIT 20');
+      if (topTools.some(t => t.name === 'run_in_terminal')) {
+        hints.push('Terminal commands have detail=command line and uri=cwd. Query with: SELECT detail, uri FROM annotations WHERE kind=\'tool\' AND name=\'run_in_terminal\' LIMIT 20');
+      }
       const mcpTools = topTools.filter(t => t.name.startsWith('mcp_'));
       if (mcpTools.length > 0) {
         hints.push('MCP tools found: ' + mcpTools.map(t => t.name).join(', '));
